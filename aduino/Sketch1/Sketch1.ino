@@ -10,7 +10,6 @@
 #include <RotaryEncoder.h>
 #include <EEPROM.h>
 
-
 /*
 		|		푸시 스위치 1			|			푸시 스위치 2
 --------+-----------+---------------+-------+-------------------
@@ -57,6 +56,38 @@ Channel |	다른채널					|			None
 // https://www.electronicsblog.net/arduino-fm-receiver-with-tea5767/
 // http://mr0ger-arduino.blogspot.kr/2014/08/tea5767n-fm-philips-library-for-arduino.html
 
+/*
+0: KBS2 FM: 89.1
+1: MBC FM4U : 91.9
+2: KBS1 FM : 93.1
+3: CBS FM : 93.9
+4: 교통방송 : 95.1
+5: MBC : 95.9
+6: KBS1 : 97.3
+7: CBS 98.1
+8: SBS LOVE FM : 103.5
+9: KBS2 : 106.1
+10: SBS POWER FM : 107.7
+*/
+struct BandInfo
+{
+	float freq;
+	String name;
+};
+
+BandInfo radiobandlist[10] = {
+	{ 89.10, "KBS2 FM" },
+	{ 91.90, "MBC FM4U" },
+	{ 93.10, "KBS1 FM" },
+	{ 93.90, "CBS FM" },
+	{ 95.90, "MBC" },
+	{ 97.30, "KBS1" },
+	{ 98.10, "CBS" },
+	{ 103.50, "SBS LOVE FM" },
+	{ 106.10, "KBS2" },
+	{ 107.70, "SBS POWER FM" }
+};
+
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -89,8 +120,13 @@ RotaryEncoder encoder1(A2, A3);
 Timer ts;
 int samplingT = 1000;		// 1sec
 
-OneButton button1(11, true);
-OneButton button2(12, true);
+bool tuneFreqChanged = false;
+Timer tuneTs;
+int tuneFreqTime = 500;		// 0.5 sec
+float nextFreq = 0;
+
+//OneButton button1(11, true);
+//OneButton button2(12, true);
 
 #define MIN_FM_FREQ		88.0
 #define MAX_FM_FREQ		108.0
@@ -111,37 +147,6 @@ int prev_signal = 0;
 bool isbackligtOn = true;
 int backlightTime = 0;
 
-/*
-0: KBS2 FM: 89.1
-1: MBC FM4U : 91.9
-2: KBS1 FM : 93.1
-3: CBS FM : 93.9
-4: 교통방송 : 95.1
-5: MBC : 95.9
-6: KBS1 : 97.3
-7: CBS 98.1
-8: SBS LOVE FM : 103.5
-9: KBS2 : 106.1
-10: SBS POWER FM : 107.7
-*/
-struct BandInfo
-{
-	float freq;
-	String name;
-};
-
-BandInfo radiobandlist[10] = {
-	{ 89.10, "KBS2 FM"}, 
-	{ 91.90, "MBC FM4U" },
-	{ 93.10, "KBS1 FM" },
-	{ 93.90, "CBS FM" },
-	{ 95.90, "MBC" },
-	{ 97.30, "KBS1" },
-	{ 98.10, "CBS" },
-	{ 103.50, "SBS LOVE FM" },
-	{ 106.10, "KBS2" },
-	{ 107.70, "SBS POWER FM" }
-};
 
 float channellist[MAX_CHANNEL_NUM] = { 0, };
 
@@ -184,6 +189,7 @@ void initRadio()
 void initTimer()
 {
 	ts.every(samplingT, doTimer);
+	tuneTs.every(tuneFreqTime, doTune);
 }
 
 void initLCD()
@@ -208,7 +214,7 @@ void setup()
 	initTimer();
 	initLCD();
 	initRadio();
-
+	/*
 	button1.attachClick(click1);
 	button2.attachClick(click2);
 	button1.attachDoubleClick(doubleclick1);
@@ -217,7 +223,7 @@ void setup()
 	button2.attachDuringLongPress(longPress2);
 	button1.attachLongPressStart(longPressStart1);
 	button2.attachLongPressStart(longPressStart2);
-
+	*/
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -326,10 +332,11 @@ void changeRadioChannel(int ch)
 	saveLastChannel();
 }
 
-void changeRadioFreq(float freq)
+void changeRadioFreq(float freq, bool turnradio)
 {
 	current_freq = freq;
-	radio.selectFrequency(current_freq);
+	if(turnradio)
+		radio.selectFrequency(current_freq);
 	printRadioInfo(0);
 
 #ifdef DEBUG
@@ -353,7 +360,7 @@ void updateEncoder()
 
 	if (encoder0lastpos != new0)
 	{
-		if (new0 > encoder0lastpos)
+		if (new0 < encoder0lastpos)
 		{
 			// +
 			int ch = current_channel + 1 > MAX_CHANNEL_NUM-1 ? 0 : current_channel + 1;
@@ -372,17 +379,21 @@ void updateEncoder()
 	{
 		float freq = current_freq;
 
-		if (new1 > encoder1lastpos)
+		if (new1 < encoder1lastpos)
 		{
 			// +
 			freq += 0.10;
-			changeRadioFreq(freq);
+			changeRadioFreq(freq, false);
+			nextFreq = freq;
+			tuneFreqChanged = true;
 		}
 		else
 		{
 			// -
 			freq -= 0.10;
-			changeRadioFreq(freq);
+			changeRadioFreq(freq, false);
+			nextFreq = freq;
+			tuneFreqChanged = true;
 		}
 		encoder1lastpos = new1;
 	}
@@ -392,9 +403,10 @@ void loop()
 {
 	updateEncoder();
 	ts.update();
+	tuneTs.update();
 
-	button1.tick();
-	button2.tick();
+	//button1.tick();
+	//button2.tick();
 
 	/*
 	if (LOW == digitalRead(11))
@@ -451,6 +463,15 @@ void doTimer()
 	checkBackLight();
 }
 
+void doTune()
+{
+	if (tuneFreqChanged == true)
+	{
+		changeRadioFreq(nextFreq, true);
+		tuneFreqChanged = false;
+	}
+}
+
 void scanRadio()
 {
 	byte isBandLimitReached = radio.startsSearchMutingFromBeginning();
@@ -505,7 +526,7 @@ void scanNextRadio()
 
 	isBandLimitReached = radio.searchNextMuting();
 	freq = radio.readFrequencyInMHz();
-	changeRadioFreq(freq);
+	changeRadioFreq(freq, true);
 
 #ifdef DEBUG
 	Serial.print("Station found: ");
